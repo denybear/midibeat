@@ -33,30 +33,55 @@
 
 // constants
 #define MIDI_CLOCK  0xF8
+#define NB_TICKS    24
+#define BEAT_120BPM_US  500000      // 1 beat @ 120BPM = 0.5 sec = 500000 usec
 
 // On-board LED mapping. If no LED, set to NO_LED_GPIO
 const uint NO_LED_GPIO = 255;
 const uint LED_GPIO = 25;
+// GPIO number for switch
+const uint SWITCH_GPIO = 23;
 
+
+// globals
 static uint8_t midi_dev_addr = 0;
+static uint64_t clock_ticks [NB_TICKS];
+static uint64_t previous, now, next, window;    // time signals; time of previous tick, time of next tick, time now, xx% of duration of last beat.   
+static uint8_t sstate;                      // state of state machine  
 
-static void blink_led(void)
+
+static bool test_switch(void)
 {
-    static absolute_time_t previous_timestamp = {0};
 
-    static bool led_state = false;
-
-    // This design has no on-board LED
-    if (NO_LED_GPIO == LED_GPIO)
-        return;
-    absolute_time_t now = get_absolute_time();
+    // test previous state of state machine
+    // set sstate value to only value of its least significant bit
+    sstate &= 0b00000001;
     
-    int64_t diff = absolute_time_diff_us(previous_timestamp, now);
-    if (diff > 1000000) {
-        gpio_put(LED_GPIO, led_state);
-        led_state = !led_state;
-        previous_timestamp = now;
+    // anti-bounce
+    // you are allowed to press only if time now is > xx% of duration of last beat (xx% of time between 2 beats)
+    if ((now - previous) < window) sstate |= 0b00000010;  
+    
+    // test if switch has been pressed
+    if (gpio_get (SWITCH_GPIO)) sstate |= 0b00000100;
+    
+    // we can take switch press into account only if
+    // switch is pressed, and 50% average timing of beat has elapsed since previous press, and previous state was unpressed
+    if (sstate == 0b00000100) {
+        // set new timings
+        next = now + (now - previous);      // take previous beat duration, and determine when next beat will occur
+        window = (now - previous) / 2;      // 50% of time between 2 beats
+        previous = now;
+        sstate |= 0b00000001;               // new state, indicating that previous state was NEXT BEAT
+        return true;
     }
+
+    // if no onboard LED, then leave
+    if (NO_LED_GPIO == LED_GPIO) return false;
+    
+    // Light onboard LED on/off, depending where we are within time window (right after beat or not)
+    if (sstate & 0b00000010) gpio_put(LED_GPIO, true);  // if we are within time window, lite LED on
+    else gpio_put(LED_GPIO, false);
+    return false;
 }
 
 
@@ -64,43 +89,101 @@ static void send_midi_clock (bool connected)
 {
     uint8_t buffer [1];
     uint8_t lg_buffer = 1;
+    uint32_t nwritten;
+    bool connected;
 
+    // set buffer with midi clock
     buffer [0] = MIDI_CLOCK;
+    
     if (connected && tuh_midih_get_num_tx_cables(midi_dev_addr) >= 1)
     {
-        uint32_t nwritten = tuh_midi_stream_write(midi_dev_addr, 0, buffer, 1);
+        nwritten = tuh_midi_stream_write(midi_dev_addr, 0, buffer, 1);
         if (nwritten != lg_buffer) {
             TU_LOG1("Warning: Dropped %lu bytes receiving from UART MIDI In\r\n", lg_buffer - nwritten);
         }
     }
 }
 
-int main() {
 
-    bi_decl(bi_program_description("Provide a USB host interface for Serial Port MIDI."));
-    bi_decl(bi_1pin_with_name(LED_GPIO, "On-board LED"));
-//    bi_decl(bi_2pins_with_names(MIDI_UART_TX_GPIO, "MIDI UART TX", MIDI_UART_RX_GPIO, "MIDI UART RX"));
+int main() {
+    
+    uint8_t i;
+    uint64_t timediff;
+    bool connected;
+
+
+    bi_decl(bi_program_description("USB host sending clock signals to external groovebox at press of a button."));
+    bi_decl(bi_2pins_with_names(LED_GPIO, "On-board LED", SWITCH_GPIO, "Switch"));
 
     board_init();
-    printf("Pico MIDI Host to MIDI UART Adapter\r\n");
+    printf("Pico midibeat\r\n");
     tusb_init();
 
     // Map the pins to functions
     gpio_init(LED_GPIO);
     gpio_set_dir(LED_GPIO, GPIO_OUT);
+    gpio_init(SWITCH_GPIO);
+    gpio_set_dir(SWITCH_GPIO, GPIO_IN);
+    gpio_pull_down (SWITCH_GPIO);       // switch pull-down
 
+    // Init variables
+    memset (clock_ticks, 0, NB_TICKS * sizeof (uint64_t));  // set table to 0
+    sstate = 0;                                             // start with state 0
+    now = to_us_since_boot (get_absolute_time());       // current time
+    previous = now - BEAT_120BPM_US;                    // we assume at start that tempo is 120BPM
+    next = 0;
+    window = BEAT_120BPM_US / 2;        // 50% of time between 2 beats
+
+
+    // main loop
     while (1) {
+        
         tuh_task();
+        // check connection to USB slave
+        connected = midi_dev_addr != 0 && tuh_midi_configured(midi_dev_addr);
 
-        blink_led();
-        bool connected = midi_dev_addr != 0 && tuh_midi_configured(midi_dev_addr);
 
-        send_midi_clock(connected);
+        now = to_us_since_boot (get_absolute_time());       // get current time
+
+
+        if (test_switch ()) {
+            // switch has been pressed
+
+            // will be useful as we need to compute timing of new ticks
+            // at this point, now and next are both correctly set
+            timediff = (next - now) / NB_TICKS;       // time between now and next beat, divided by 24 (24 midi clock per beat)
+
+            // make sure we send remaining clocks events, if any
+            for (i=0; i<NB_TICKS ; i++) {
+                if (clock_ticks [i] != 0) {
+                        send_midi_clock (connected);
+                        // now need to clear clock_ticks [i] as we are going to recalculate them all
+                }
+
+                // compute timings for new clock events
+                clock_ticks [i] = now + (timediff * i);
+            }
+        }
+                    
+        // check if it is time to send a midi clock signal
+        // regardless switch has been pressed or not
+        for (i=0; i<NB_TICKS ; i++) {
+            if ((clock_ticks[i] != 0) && (now >= clock_ticks [i])) {
+                    send_midi_clock (connected);
+                    clock_ticks[i] = 0;
+            }
+        }
+
+// For test purpose
+//send_midi_clock (connected);
+//sleep_ms (20);
+
+        // flush send buffer
         if (connected)
             tuh_midi_stream_flush(midi_dev_addr);
-        sleep_ms (20);
     }
 }
+
 
 //--------------------------------------------------------------------+
 // TinyUSB Callbacks
@@ -139,6 +222,7 @@ void tuh_midi_umount_cb(uint8_t dev_addr, uint8_t instance)
 
 void tuh_midi_rx_cb(uint8_t dev_addr, uint32_t num_packets)
 {
+/*
     if (midi_dev_addr == dev_addr)
     {
         if (num_packets != 0)
@@ -147,17 +231,15 @@ void tuh_midi_rx_cb(uint8_t dev_addr, uint32_t num_packets)
             uint8_t buffer[48];
             while (1) {
                 uint32_t bytes_read = tuh_midi_stream_read(dev_addr, &cable_num, buffer, sizeof(buffer));
-                if (bytes_read == 0)
-                    return;
+                if (bytes_read == 0) return;
                 if (cable_num == 0) {
-//                    uint8_t npushed = midi_uart_write_tx_buffer(midi_uart_instance,buffer,bytes_read);
-//                    if (npushed != bytes_read) {
-//                        TU_LOG1("Warning: Dropped %lu bytes sending to UART MIDI Out\r\n", bytes_read - npushed);
-//                    }
+                    // do something as processing
                 }
             }
         }
     }
+*/
+    return;
 }
 
 void tuh_midi_tx_cb(uint8_t dev_addr)
