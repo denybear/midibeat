@@ -90,7 +90,6 @@ static void send_midi_clock (bool connected)
     uint8_t buffer [1];
     uint8_t lg_buffer = 1;
     uint32_t nwritten;
-    bool connected;
 
     // set buffer with midi clock
     buffer [0] = MIDI_CLOCK;
@@ -175,8 +174,8 @@ int main() {
         }
 
 // For test purpose
-//send_midi_clock (connected);
-//sleep_ms (20);
+send_midi_clock (connected);
+sleep_ms (20);
 
         // flush send buffer
         if (connected)
