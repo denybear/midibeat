@@ -173,9 +173,9 @@ int main() {
             }
         }
 
-// For test purpose
-send_midi_clock (connected);
-sleep_ms (20);
+        // For test purpose
+        //send_midi_clock (connected);
+        //sleep_ms (20);
 
         // flush send buffer
         if (connected)
