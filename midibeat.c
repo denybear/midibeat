@@ -33,9 +33,9 @@
 
 // constants
 #define MIDI_CLOCK  0xF8
-#define NB_TICKS    24
+#define NB_TICKS    24               // 24 ticks per beat (quarter note)
 #define BEAT_120BPM_US  500000      // 1 beat @ 120BPM = 0.5 sec = 500000 usec
-#define ANTIBOUNCE_US   200000      // 0.20 sec = 200000 usec
+#define ANTIBOUNCE_US   240000      // 0.24 sec = 240000 usec
 #define TIMEON_US       200000      // 0.20 sec
 #define BEAT_40BPM_US   1500000     // 1 beat @ 40BPM = 1.5 sec = 1500000 usec
 #define BEAT_240BPM_US  250000      // 1 beat @ 240BPM = 0.25 sec = 250000 usec
@@ -56,7 +56,6 @@ static bool test_switch(void)
 {
     // test if switch has been pressed
     if (gpio_get (SWITCH_GPIO)) {
-printf ("switch\n\r");
         // anti bounce : if no bounce, then return ok
         if ((now-previous) > ANTIBOUNCE_US) return true;
     }
@@ -131,7 +130,7 @@ int main() {
         if (test_switch ()) {
             // switch has been pressed
             // compute new sleeping time
-            timediff = (now - previous) / NB_TICKS;       // time between now and previous beat, divided by 24 (24 midi clock per beat)
+            timediff = (now - previous) / NB_TICKS;       // time between now and previous beat, divided by 6 (6 midi clock per beat)
             // cap timediff to avoid to slow or too fast
             if (timediff > (BEAT_40BPM_US / NB_TICKS)) timediff = BEAT_40BPM_US / NB_TICKS;
             if (timediff < (BEAT_240BPM_US / NB_TICKS)) timediff = BEAT_240BPM_US / NB_TICKS;
