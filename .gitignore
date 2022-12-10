@@ -1,3 +1,4 @@
 ../pico-sdk/
 /build/
 *.cmake
+/.vscode/

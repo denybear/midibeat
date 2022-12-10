@@ -16,6 +16,8 @@ add_executable(${target_proj}
 )
 
 #pico_enable_stdio_uart(${target_proj} 1)
+#pico_enable_stdio_usb(${target_proj} 0)
+
 
 target_include_directories(${target_proj} PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 
