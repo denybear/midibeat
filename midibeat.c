@@ -35,7 +35,10 @@
 #define MIDI_CLOCK  0xF8
 #define NB_TICKS    24
 #define BEAT_120BPM_US  500000      // 1 beat @ 120BPM = 0.5 sec = 500000 usec
-#define BUFFER_SIZE 100             // 100 bytes as send buffer
+#define ANTIBOUNCE_US   200000      // 0.20 sec = 200000 usec
+#define TIMEON_US       200000      // 0.20 sec
+#define BEAT_40BPM_US   1500000     // 1 beat @ 40BPM = 1.5 sec = 1500000 usec
+#define BEAT_240BPM_US  250000      // 1 beat @ 240BPM = 0.25 sec = 250000 usec
 
 // On-board LED mapping. If no LED, set to NO_LED_GPIO
 const uint NO_LED_GPIO = 255;
@@ -46,49 +49,23 @@ const uint SWITCH_GPIO = 16;
 
 // globals
 static uint8_t midi_dev_addr = 0;
-static uint64_t clock_ticks [NB_TICKS];
-static uint64_t previous, now, next, window;    // time signals; time of previous tick, time of next tick, time now, xx% of duration of last beat.   
-static uint8_t sstate;                      // state of state machine
-static  uint8_t buffer [BUFFER_SIZE];               // buffer to send midi clocks
-static uint8_t posbuffer;       // position in buffer  
+static uint64_t previous, now;    // time signals; time of previous tick, time now
 
 
 static bool test_switch(void)
 {
-
-    // test previous state of state machine
-    // set sstate value to only value of its least significant bit
-    sstate &= 0b00000001;
-    
-    // anti-bounce
-    // you are allowed to press only if time now is > xx% of duration of last beat (xx% of time between 2 beats)
-    if ((now - previous) < window) sstate |= 0b00000010;  
-    
     // test if switch has been pressed
     if (gpio_get (SWITCH_GPIO)) {
-        sstate |= 0b00000100;
-printf ("switch %x\n\r", sstate);
+printf ("switch\n\r");
+        // anti bounce : if no bounce, then return ok
+        if ((now-previous) > ANTIBOUNCE_US) return true;
     }
     
-    // we can take switch press into account only if
-    // switch is pressed, and 50% average timing of beat has elapsed since previous press, and previous state was unpressed
-    if (sstate == 0b00000100) {
-        // set new timings
-        next = now + (now - previous);      // take previous beat duration, and determine when next beat will occur
-        window = (now - previous) / 2;      // 50% of time between 2 beats
-        window = window < 100000 ? window : 100000;     // cap max value of window to 100ms = 100000us
-        previous = now;
-        sstate |= 0b00000001;               // new state, indicating that previous state was NEXT BEAT
-        return true;
-    }
-    // do not take switch into account; reset state
-    else sstate &=0b11111110;
-
     // if no onboard LED, then leave
     if (NO_LED_GPIO == LED_GPIO) return false;
     
-    // Light onboard LED on/off, depending where we are within time window (right after beat or not)
-    if (sstate & 0b00000010) gpio_put(LED_GPIO, true);  // if we are within time window, lite LED on
+    // Light onboard LED on/off, depending where we are within time window
+    if ((now - previous) < TIMEON_US) gpio_put(LED_GPIO, true);  // if we are within time window, lite LED on
     else gpio_put(LED_GPIO, false);
     return false;
 }
@@ -97,30 +74,23 @@ printf ("switch %x\n\r", sstate);
 static void send_midi_clock (bool connected)
 {
     uint32_t nwritten;
-    uint8_t i;
+    uint8_t buffer [1];               // buffer to send midi clocks
 
     // set buffer with midi clock
-    buffer [posbuffer] = MIDI_CLOCK;    // add to buffer
-    posbuffer ++;                       // increment position
-    
+    buffer [0] = MIDI_CLOCK;    // add to buffer
+   
     if (connected && tuh_midih_get_num_tx_cables(midi_dev_addr) >= 1)
     {
-        nwritten = tuh_midi_stream_write(midi_dev_addr, 0, buffer, posbuffer);
-        if (nwritten != posbuffer) {
-            TU_LOG1("Warning: Dropped %lu bytes\r\n", posbuffer);
+        nwritten = tuh_midi_stream_write(midi_dev_addr, 0, buffer, 1);
+        if (nwritten != 1) {
+            TU_LOG1("Warning: Dropped 1 byte\r\n");
         }
-
-        // adjust posbuffer position (and cap it)
-        posbuffer -=nwritten;       // we sent only nwritten bytes; adjust posbuffer accordingly
-        if (posbuffer >= BUFFER_SIZE) posbuffer = BUFFER_SIZE - 1;  // cap posbuffer
-
     }
 }
 
 
 int main() {
     
-    uint8_t i;
     uint64_t timediff;
     bool connected;
 
@@ -140,14 +110,9 @@ int main() {
     gpio_pull_down (SWITCH_GPIO);       // switch pull-down
 
     // Init variables
-    memset (clock_ticks, 0, NB_TICKS * sizeof (uint64_t));  // set table to 0
-    memset (buffer, 0, BUFFER_SIZE * sizeof (uint8_t));
-    posbuffer = 0;
-    sstate = 0;                                             // start with state 0
     now = to_us_since_boot (get_absolute_time());       // current time
     previous = now - BEAT_120BPM_US;                    // we assume at start that tempo is 120BPM
-    next = 0;
-    window = BEAT_120BPM_US / 2;        // 50% of time between 2 beats
+    timediff = BEAT_120BPM_US / NB_TICKS;
 
 
     // main loop
@@ -157,41 +122,21 @@ int main() {
         // check connection to USB slave
         connected = midi_dev_addr != 0 && tuh_midi_configured(midi_dev_addr);
 
+        // Send clock and wait for sleeptime
+        send_midi_clock (connected);
+        sleep_us (timediff);
 
         now = to_us_since_boot (get_absolute_time());       // get current time
 
-
         if (test_switch ()) {
             // switch has been pressed
-
-            // will be useful as we need to compute timing of new ticks
-            // at this point, now and next are both correctly set
-            timediff = (next - now) / NB_TICKS;       // time between now and next beat, divided by 24 (24 midi clock per beat)
-
-            // make sure we send remaining clocks events, if any
-            for (i=0; i<NB_TICKS ; i++) {
-                if (clock_ticks [i] != 0) {
-                        send_midi_clock (connected);
-                        // now need to clear clock_ticks [i] as we are going to recalculate them all
-                }
-
-                // compute timings for new clock events
-                clock_ticks [i] = now + (timediff * i);
-            }
+            // compute new sleeping time
+            timediff = (now - previous) / NB_TICKS;       // time between now and previous beat, divided by 24 (24 midi clock per beat)
+            // cap timediff to avoid to slow or too fast
+            if (timediff > (BEAT_40BPM_US / NB_TICKS)) timediff = BEAT_40BPM_US / NB_TICKS;
+            if (timediff < (BEAT_240BPM_US / NB_TICKS)) timediff = BEAT_240BPM_US / NB_TICKS;
+            previous = now;
         }
-                    
-        // check if it is time to send a midi clock signal
-        // regardless switch has been pressed or not
-        for (i=0; i<NB_TICKS ; i++) {
-            if ((clock_ticks[i] != 0) && (now >= clock_ticks [i])) {
-                    send_midi_clock (connected);
-                    clock_ticks[i] = 0;
-            }
-        }
-
-        // For test purpose
-        //send_midi_clock (connected);
-        //sleep_ms (20);
 
         // flush send buffer
         if (connected)
