@@ -42,7 +42,8 @@
 
 // On-board LED mapping. If no LED, set to NO_LED_GPIO
 const uint NO_LED_GPIO = 255;
-const uint LED_GPIO = 25;
+const uint LED_GPIO = 25;   // onboard led
+const uint LED2_GPIO = 17;  // another led
 // GPIO number for switch
 const uint SWITCH_GPIO = 16;
 
@@ -55,17 +56,21 @@ static uint64_t previous, now;    // time signals; time of previous tick, time n
 static bool test_switch(void)
 {
     // test if switch has been pressed
-    if (gpio_get (SWITCH_GPIO)) {
+    // in this case, line is down (level 0)
+    if (gpio_get (SWITCH_GPIO)==0) {
         // anti bounce : if no bounce, then return ok
         if ((now-previous) > ANTIBOUNCE_US) return true;
     }
-    
-    // if no onboard LED, then leave
-    if (NO_LED_GPIO == LED_GPIO) return false;
-    
+     
     // Light onboard LED on/off, depending where we are within time window
-    if ((now - previous) < TIMEON_US) gpio_put(LED_GPIO, true);  // if we are within time window, lite LED on
-    else gpio_put(LED_GPIO, false);
+    if ((now - previous) < TIMEON_US) {
+        if (NO_LED_GPIO != LED_GPIO) gpio_put(LED_GPIO, true);  // if onboard led and if we are within time window, lite LED on
+        if (NO_LED_GPIO != LED2_GPIO) gpio_put(LED2_GPIO, true);  // if another led and if we are within time window, lite LED on
+    }
+    else {
+        if (NO_LED_GPIO != LED_GPIO) gpio_put(LED_GPIO, false);  // if onboard led and if we are outside time window, lite LED off
+        if (NO_LED_GPIO != LED2_GPIO) gpio_put(LED2_GPIO, false);  // if another led and if we are outside time window, lite LED off
+    }
     return false;
 }
 
@@ -104,9 +109,11 @@ int main() {
     // Map the pins to functions
     gpio_init(LED_GPIO);
     gpio_set_dir(LED_GPIO, GPIO_OUT);
+    gpio_init(LED2_GPIO);
+    gpio_set_dir(LED2_GPIO, GPIO_OUT);
     gpio_init(SWITCH_GPIO);
     gpio_set_dir(SWITCH_GPIO, GPIO_IN);
-    gpio_pull_down (SWITCH_GPIO);       // switch pull-down
+    gpio_pull_up (SWITCH_GPIO);       // switch pull-up
 
     // Init variables
     now = to_us_since_boot (get_absolute_time());       // current time
