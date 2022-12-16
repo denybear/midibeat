@@ -32,11 +32,12 @@
 #include "tusb.h"
 
 // constants
+#define ANTIBOUNCE_US   240000      // 0.24 sec = 240000 usec : used for switch anti-bouncing check
+#define TIMEON_US       200000      // 0.20 sec : used as on/off time for leds 
+
 #define MIDI_CLOCK  0xF8
 #define NB_TICKS    24               // 24 ticks per beat (quarter note)
 #define BEAT_120BPM_US  500000      // 1 beat @ 120BPM = 0.5 sec = 500000 usec
-#define ANTIBOUNCE_US   240000      // 0.24 sec = 240000 usec
-#define TIMEON_US       200000      // 0.20 sec
 #define BEAT_40BPM_US   1500000     // 1 beat @ 40BPM = 1.5 sec = 1500000 usec
 #define BEAT_240BPM_US  250000      // 1 beat @ 240BPM = 0.25 sec = 250000 usec
 
@@ -51,6 +52,7 @@ const uint SWITCH_GPIO = 16;
 // globals
 static uint8_t midi_dev_addr = 0;
 static uint64_t previous, now;    // time signals; time of previous tick, time now
+static uint64_t nb_ticks, beat_120bpm_us, beat_40bpm_us, beat_240bpm_us;    // time signals; time of previous tick, time now
 
 
 static bool test_switch(void)
@@ -93,6 +95,62 @@ static void send_midi_clock (bool connected)
 }
 
 
+static choose_tempo(void)
+// user can select tempo (number of switch press per beat/bar) by pressing switch at power on
+// switch not pressed : standard "beat" mode, ie. 1 press per beat, ie. 4 press per bar
+// switch pressed for 2 sec: compressed "beat" mode, 1 press per 1/2 beat, ie. 8 press per bar - this is very useful in case you have tempo/2 on your groovebox to save room
+// (you store 2 times more things as you can store 2 bar in a single bar space, and play the bars at tempo/2).
+// switch pressed for 4 sec: standard "bar" mode, 1 press per 4 beat, ie. 1 press per bar - useful if you prefer to click on bars and not on beats
+// switch pressed for 6 sec: compressed "bar" mode, 1 press per 2 beat, ie. 2 press per bar - useful if you prefer to click on bars and not on beats, but your groovebox is set at tempo/2
+{
+	uint64_t press_on, press_off;    // time when switch is pressed on at startup, and when it is pressed off
+
+        press_on = to_us_since_boot (get_absolute_time());       // get current time
+
+		// loop if switch has been pressed
+		// in this case, line is down (level 0)
+		while (gpio_get (SWITCH_GPIO)==0);
+
+        press_off = to_us_since_boot (get_absolute_time());       // get current time
+		
+		if (press_off-press_on < 2000000) {		// less than 2 sec
+			// standard beat mode: 1 switch press per beat
+			nb_ticks = NB_TICKS;
+			beat_120bpm_us = BEAT_120BPM_US;
+			beat_40bpm_us = BEAT_40BPM_US;
+			beat_240bpm_us = BEAT_240BPM_US;
+			return;
+		}
+
+		if (press_off-press_on < 4000000) {		// less than 4 sec
+			// compressed beat mode: 2 switch press per beat
+			nb_ticks = NB_TICKS / 2;
+			beat_120bpm_us = BEAT_120BPM_US;
+			beat_40bpm_us = BEAT_40BPM_US;
+			beat_240bpm_us = BEAT_240BPM_US;
+			return;
+		}
+
+		if (press_off-press_on < 6000000) {		// less than 6 sec
+			// standard bar mode: 1 switch press per bar (1 per 4 beats)
+			nb_ticks = NB_TICKS * 4;
+			beat_120bpm_us = BEAT_120BPM_US * 4;
+			beat_40bpm_us = BEAT_40BPM_US * 4;
+			beat_240bpm_us = BEAT_240BPM_US * 4;
+			return;
+		}
+	
+		else {		// more than 6 sec
+			// compressed bar mode: 2 switch press per bar (1 per 2 beats)
+			nb_ticks = NB_TICKS * 2;				// = NB_TICKS * 4 / 2
+			beat_120bpm_us = BEAT_120BPM_US * 4;
+			beat_40bpm_us = BEAT_40BPM_US * 4;
+			beat_240bpm_us = BEAT_240BPM_US * 4;
+			return;
+		}
+}
+
+
 int main() {
     
     uint64_t timediff;
@@ -100,7 +158,7 @@ int main() {
 
 
     bi_decl(bi_program_description("USB host sending clock signals to external groovebox at press of a button."));
-    bi_decl(bi_2pins_with_names(LED_GPIO, "On-board LED", SWITCH_GPIO, "Switch"));
+    bi_decl(bi_3pins_with_names(LED_GPIO, "On-board LED", LED2_GPIO, "Off-board LED", SWITCH_GPIO, "Switch"));
 
     board_init();
     printf("Pico midibeat\r\n");
@@ -115,10 +173,13 @@ int main() {
     gpio_set_dir(SWITCH_GPIO, GPIO_IN);
     gpio_pull_up (SWITCH_GPIO);       // switch pull-up
 
+	// Tempo can be modified at startup
+	choose_tempo ();
+
     // Init variables
     now = to_us_since_boot (get_absolute_time());       // current time
-    previous = now - BEAT_120BPM_US;                    // we assume at start that tempo is 120BPM
-    timediff = BEAT_120BPM_US / NB_TICKS;
+    previous = now - beat_120bpm_us;                    // we assume at start that tempo is 120BPM in standard mode
+    timediff = beat_120bpm_us / nb_ticks;
 
 
     // main loop
@@ -137,10 +198,10 @@ int main() {
         if (test_switch ()) {
             // switch has been pressed
             // compute new sleeping time
-            timediff = (now - previous) / NB_TICKS;       // time between now and previous beat, divided by 6 (6 midi clock per beat)
+            timediff = (now - previous) / nb_ticks;       // time between now and previous beat, divided by 24 (24 midi clock per beat)
             // cap timediff to avoid to slow or too fast
-            if (timediff > (BEAT_40BPM_US / NB_TICKS)) timediff = BEAT_40BPM_US / NB_TICKS;
-            if (timediff < (BEAT_240BPM_US / NB_TICKS)) timediff = BEAT_240BPM_US / NB_TICKS;
+            if (timediff > (beat_40bpm_us / nb_ticks)) timediff = beat_40bpm_us / nb_ticks;
+            if (timediff < (beat_240bpm_us / nb_ticks)) timediff = beat_240bpm_us / nb_ticks;
             previous = now;
         }
 
