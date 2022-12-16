@@ -95,7 +95,7 @@ static void send_midi_clock (bool connected)
 }
 
 
-static choose_tempo(void)
+static void choose_tempo(void)
 // user can select tempo (number of switch press per beat/bar) by pressing switch at power on
 // switch not pressed : standard "beat" mode, ie. 1 press per beat, ie. 4 press per bar
 // switch pressed for 2 sec: compressed "beat" mode, 1 press per 1/2 beat, ie. 8 press per bar - this is very useful in case you have tempo/2 on your groovebox to save room
@@ -126,8 +126,8 @@ static choose_tempo(void)
 			// compressed beat mode: 2 switch press per beat
 			nb_ticks = NB_TICKS / 2;
 			beat_120bpm_us = BEAT_120BPM_US;
-			beat_40bpm_us = BEAT_40BPM_US;
-			beat_240bpm_us = BEAT_240BPM_US;
+			beat_40bpm_us = BEAT_40BPM_US / 2;
+			beat_240bpm_us = BEAT_240BPM_US / 2;
 			return;
 		}
 
@@ -144,8 +144,8 @@ static choose_tempo(void)
 			// compressed bar mode: 2 switch press per bar (1 per 2 beats)
 			nb_ticks = NB_TICKS * 2;				// = NB_TICKS * 4 / 2
 			beat_120bpm_us = BEAT_120BPM_US * 4;
-			beat_40bpm_us = BEAT_40BPM_US * 4;
-			beat_240bpm_us = BEAT_240BPM_US * 4;
+			beat_40bpm_us = BEAT_40BPM_US * 2;
+			beat_240bpm_us = BEAT_240BPM_US * 2;
 			return;
 		}
 }
