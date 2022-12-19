@@ -153,7 +153,7 @@ static void choose_tempo(void)
 
 int main() {
     
-    uint64_t timediff;
+    uint64_t timediff, timedifftemp;
     bool connected;
 
 
@@ -197,8 +197,16 @@ int main() {
 
         if (test_switch ()) {
             // switch has been pressed
-            // compute new sleeping time
-            timediff = (now - previous) / nb_ticks;       // time between now and previous beat, divided by 24 (24 midi clock per beat)
+
+            timedifftemp = (now - previous) / nb_ticks;        // time between now and previous beat, divided by 24 (24 midi clock per beat)
+
+            // it may be that we missed one switch press (switch may not be reliable 100%)
+            // take this into account : in this case, (now - previous) shall be circa 2x more than expected; we put this limit at > 1.75x
+            // check if timedifftemp < 1.75 * timediff : if true, then we did noot miss any press and new timing applies
+            if (timedifftemp < (timediff + (timediff>>1) + (timediff>>2))) {
+                timediff = timedifftemp;        // we assume no switch press was missed : update timediff value to new tempo
+            }                                   // else we assume we missed 1 switch and we don't update timediff: we stick to current tempo
+
             // cap timediff to avoid to slow or too fast
             if (timediff > (beat_40bpm_us / nb_ticks)) timediff = beat_40bpm_us / nb_ticks;
             if (timediff < (beat_240bpm_us / nb_ticks)) timediff = beat_240bpm_us / nb_ticks;
